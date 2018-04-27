@@ -1,0 +1,225 @@
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>decodePadDungeon</title>
+<style type="text/css">
+<!--
+
+
+
+-->
+</style>
+</head>
+<body>
+[暗号文] (e)<br>
+<textarea id="c" cols="100" rows="15"></textarea>
+<br><br>
+<input type="button" value="↓複合化" onclick="$('p').value=massDecode();">　　　　
+<input type="button" value="↑暗号化" onclick="$('c').value=encodePadDungeon($('p').value,$('k').value);">
+(<input type="text" id="k" size="3">←初期鍵を指定(0～255の間)、空欄ならランダムに鍵を生成)
+<br><br>
+[平文]<br>
+<textarea id="p" cols="100" rows="15"></textarea>
+<p>
+<script type="text/javascript">
+<!--
+function massDecode()
+{
+var dec='';
+var lines=$('c').value.split('\n');
+	for (var i=0; i<lines.length;i++)
+	{
+	dec = dec+decodePadDungeon(lines[i])+'\n';
+	}
+return dec
+}
+
+function decodePadDungeon(c)
+{
+	var h1 = parseInt(c.substr(0, 2), 16);
+	var h2 = parseInt(c.substr(2, 2), 16);
+	var key = h1;
+	var p = "";
+	var t1, t2, t3, t4;
+	var cflag = 0, cbuff = "";
+	var chksum = 0;
+	
+	for (var i = 4; i < c.length; i++)
+	{
+		t1 = ascii2code(c.charCodeAt(i));
+		key = getKey(key);
+		t2 = (t1 ^ key) & 0x3f;
+		
+		if (t2 != 62)
+		{
+			if (cflag == 0)
+			{
+				t3 = code2ascii(t2);
+				p += String.fromCharCode(t3);
+				chksum += t3;
+			}
+			else
+			{
+				if (cflag == 1)
+				{
+					t3 = code2ascii(t2);
+					cbuff += String.fromCharCode(t3);
+					cflag = 2;
+				}
+				else
+				{
+					t3 = code2ascii(t2);
+					cbuff += String.fromCharCode(t3);
+					t4 = parseInt(cbuff, 16);
+					p += String.fromCharCode(t4);
+					chksum += t4;
+					cflag = 0;
+				}
+			}
+		}
+		else
+		{
+			cflag = 1;
+			cbuff = "";
+		}
+	}
+	return p;
+	/*
+	if((h1 ^ h2) == (chksum % 256))
+	{
+		return p;
+	}
+	else
+	{
+		return false;
+	}
+	*/
+}
+
+function encodePadDungeon(p, key)
+{
+	function num2hex(num)
+	{
+		var hex = num.toString(16).toLowerCase();
+		if(hex.length < 2)
+		{
+			hex = "0" + hex;
+		}
+		return hex;
+	}
+	
+	var c = "";
+	key = parseInt(key);
+	if (!(0 <= key && key <= 255))
+	{
+		key = Math.floor(Math.random() * 256);
+	}
+	var h1 = key;
+	var t1, t2, t3, t4, t5;
+	var chksum = 0;
+	
+	for (var i = 0; i < p.length; i++)
+	{
+		t1 = p.charCodeAt(i);
+		chksum += t1;
+		t2 = ascii2code(t1);
+		if (t2 == null)
+		{
+			key = getKey(key);
+			t2 = 62;
+			t3 = (t2 ^ key) & 0x3f;
+			t4 = code2ascii(t3);
+			c += String.fromCharCode(t4);
+			
+			t5 = num2hex(t1);
+			
+			key = getKey(key);
+			t2 = ascii2code(t5.charCodeAt(0));
+			t3 = (t2 ^ key) & 0x3f;
+			t4 = code2ascii(t3);
+			c += String.fromCharCode(t4);
+			
+			key = getKey(key);
+			t2 = ascii2code(t5.charCodeAt(1));
+			t3 = (t2 ^ key) & 0x3f;
+			t4 = code2ascii(t3);
+			c += String.fromCharCode(t4);
+		}
+		else
+		{
+			key = getKey(key);
+			t3 = (t2 ^ key) & 0x3f;
+			t4 = code2ascii(t3);
+			c += String.fromCharCode(t4);
+		}
+	}
+	var h2 = h1 ^ (chksum % 256);
+	return num2hex(h1).toUpperCase() + num2hex(h2).toUpperCase() + c;
+}
+
+function getKey(k)
+{
+	return (57 * k + 109) % 256;
+}
+
+function code2ascii(a)
+{
+	var b = null;
+	if (a <= 9)	// 数字
+	{
+		b = a + 48;
+	}
+	else if (a <= 35)	// 小文字
+	{
+		b = a + 87;
+	}
+	else if (a <= 61)	// 大文字
+	{
+		b = a + 29;
+	}
+	else if (a == 62)	// .
+	{
+		b = 46;
+	}
+	else if (a == 63)	// ,
+	{
+		b = 44;
+	}
+	return b;
+}
+
+function ascii2code(a)
+{
+	var b = null;
+	if (a == 44)	// ,
+	{
+		b = 63;
+	}
+	else if (a == 46)	// .
+	{
+		b = 62;
+	}
+	else if (48 <= a && a <= 57)	// 数字
+	{
+		b = a - 48;
+	}
+	else if (65 <= a && a <= 90)	// 大文字
+	{
+		b = a - 29;
+	}
+	else if (97 <= a && a <= 122)	// 小文字
+	{
+		b = a - 87;
+	}
+	return b;
+}
+
+function $(id)
+{
+	return document.getElementById(id);
+}
+
+//-->
+</script>
+</body>
+</html>
