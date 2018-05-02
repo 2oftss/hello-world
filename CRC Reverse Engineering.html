@@ -1,0 +1,262 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<!-- saved from url=(0080)https://www.cosc.canterbury.ac.nz/greg.ewing/essays/CRC-Reverse-Engineering.html -->
+<html><script type="text/javascript" charset="utf-8" id="zm-extension" src="chrome-extension://fdcgdnkidjaadafnichfpabhfomcebme/scripts/webrtc-patch.js" async=""></script><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><title>CRC Reverse Engineering</title></head>
+<body><h1>Reverse-Engineering a CRC Algorithm</h1>By Gregory Ewing<br><a href="mailto:greg.ewing@canterbury.ac.nz">greg.ewing@canterbury.ac.nz</a><br><a href="http://www.cosc.canterbury.ac.nz/greg.ewing">http://www.cosc.canterbury.ac.nz/greg.ewing</a><br>March 2010<br><br>I
+had occasion to want to write a program to make some changes to some
+files that were protected by a CRC. The program that created the files
+was closed-source and too big for disassembly to be practical, so I
+wondered whether it would be possible to work out the polynomial and
+other parameters being used to generate the CRC from examining examples
+of the files.<br><br>After a rather long and interesting journey, I did
+find a way. I'm writing this essay to document the techniques that I
+developed, in case anyone else finds them useful.<br><h2>CRC Parameters</h2>First, a bit of background. I will be discussing CRC algorithms in terms of what is known as the "Rocksoft model", described in <a href="http://www.ross.net/crc/crcpaper.html">"A Painless Guide to CRC Error Detection Algorithms"</a>
+by Ross N. Williams. If you're not familiar with the way CRC generation
+algorithms work, it would be a good idea to go and read that first
+before coming back here.<br><br>The relevant parameters can be summarised as follows. Here I'm using the names that the Python program <a href="http://www.tty1.net/pycrc/">pycrc</a> uses for them.<br><ul><li><span style="font-weight: bold;">Width</span> - the number of bits in the final CRC result.</li><li><span style="font-weight: bold;">Poly</span>
+- the polynomial being used to generate the CRC, expressed as a bit
+string. (I will omit the leading 1 bit that is always understood to be
+present.)</li><li><span style="font-weight: bold;">ReflectIn</span>
+(boolean) - Whether to reverse the input bytes before applying the
+algorithm to them. (This is equivalent to processing the input bytes
+LSB-first instead of MSB-first.)</li><li><span style="font-weight: bold;">XorIn</span> - the initial value of the CRC register.</li><li><span style="font-weight: bold;">ReflectOut</span>
+(boolean) - whether to reverse the bits of the CRC before presenting it
+as the final result. (This is equivalent to mirroring the algorithm so
+that the register is shifted right instead of left.)</li><li><span style="font-weight: bold;">XorOut</span> - a value to be exclusive-ored with the final CRC value.</li></ul>There
+are a number of equivalent ways in which a CRC algorithm can be
+implemented. I will be discussing things in terms of a so-called "direct"
+bit-by-bit implementation, in which incoming bits are xored with the
+leading bit shifted out of the CRC register, rather than being shifted
+through the register.<br><h2>The Data Files</h2>The
+files concerned were user-defined data tables for a proprietary
+application having a database component. Examination of the files
+revealed that they consisted of three parts: a 48-byte header, a
+description of the schema, and the data records. The schema section
+appeared to be padded with zeroes to bring the header plus schema up to
+a multiple of 512 bytes. The test files I was working with were
+newly-created tables containing no records, so the end of the schema
+was also the end of the file.<br><br>There were two bytes in the header that changed
+in an apparently random fashion, which I surmised was a 16-bit CRC. I
+was assuming it was a CRC rather than some other kind of checksum,
+because the application would report a "CRC mismatch" when attempting
+to open a modified file.<br><br>Since this was on Windows, it also
+seemed a fair bet that the CRC would be stored little-endian, and this
+later proved to be correct.<br><br>Another thing I needed to know was
+how much of the file the CRC covered. Most of the header appeared to be
+unused, and I found &nbsp;that I could change the last byte of the
+header without the application complaining. However, if I changed the
+last byte in the schema, it complained of a CRC mismatch. I concluded
+that the CRC covered everything in the schema area, including the pad
+bytes. (This turned out to be almost correct, but not quite.)<br><h2>Initial Attempts</h2>From
+some googling and newsgroup enquiries, it appeared at first that there
+would be no easy way of finding out the CRC parameters, and I would
+have to rely on trial and error.<br><br>I found a program,&nbsp;<a href="http://www.tty1.net/pycrc/">pycrc</a>,
+that among other things allows you to calculate a CRC for supplied data
+given the above parameters. The first thing I did was to try all the
+standard 16-bit CRC models that pycrc knows about, none of which worked.<br><br>Next
+I considered trying a brute-force search of all possible 16-bit
+polynomials. This seemed feasible, although not quite as
+straightforward as it might appear at first, because of the XorIn and
+XorOut parameters. Without knowing them, I wouldn't be able to tell
+when I'd found the right polynomial, and trying all possible
+combinations of Poly+XorIn+XorOut would obviously not be practical.<br><br>Fortunately,
+there are some properties of CRC algorithms that provide a way of getting around this difficulty.<br><h2>Some CRC Theory</h2>Because
+the whole CRC algorithm is based on exclusive-or operations, CRCs obey
+a kind of superposition principle. You can think of the CRC as being
+made up of the exclusive-or of a set of component CRCs, each of which
+depends on just one bit in the message.<br><br>We can also treat the
+initial value of the CRC register (the XorIn parameter) as generating a
+component of its own that gets xored into the final CRC. So we can
+express the CRC of a message in terms of three components:<br><br><div style="margin-left: 40px;"><span style="font-style: italic;">C = T</span><sup style="font-style: italic;">n</sup><span style="font-style: italic;">I + D + F</span><br></div><br>where + represents exclusive-or, and<br><br><div style="margin-left: 40px;"><span style="font-style: italic;">I</span> = the initial register contents (XorIn)<br><span style="font-style: italic;">F</span> = the final xor value (XorOut)<br><span style="font-style: italic;">n</span> = the length of the message<br><span style="font-style: italic;">D</span> = the homogeneous CRC of the data in the message<br><span style="font-style: italic;">T</span><sup style="font-style: italic;">i</sup> <span style="font-style: italic;">x</span> = the result of applying <span style="font-style: italic;">i</span> shift-xor steps to register contents <span style="font-style: italic;">x</span> with zero data<br></div><br>Here I'm borrowing a term from linear algebra and using "homogeneous CRC" to mean a CRC calculated using XorIn = XorOut = 0.<br><br>Now suppose we take two messages of the same length and exclusive-or them together. The exclusive-or of their CRCs is given by<br><br><span style="font-style: italic;"></span><table style="text-align: left; margin-left: 40px;" border="0" cellpadding="2" cellspacing="2"><tbody><tr><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;">C<sub>1</sub> + C<sub>2</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: middle;"><span style="font-style: italic;">=</span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;">(T</span><sup style="font-style: italic;">n</sup><span style="font-style: italic;">I + D<sub>1</sub> + F)</span> + <span style="font-style: italic;">(T</span><sup style="font-style: italic;">n</sup><span style="font-style: italic;">I + D<sub>2</sub> + F</span>)</td></tr><tr><td align="left" nowrap="nowrap"></td><td align="left" nowrap="nowrap">=</td><td align="left" nowrap="nowrap"><span style="font-style: italic;">D<sub>1</sub> + D<sub>2</sub></span></td></tr></tbody></table><span style="font-style: italic;"><br></span>The<span style="font-style: italic;"> I </span>and <span style="font-style: italic;">F</span>
+terms have cancelled out, leaving us with just the homogeneous CRC of
+the exclusive-ored data. So we can ignore the XorIn and XorOut
+parameters initially, as long as we confine ourselves to studying this
+kind of message, which I will call a <span style="font-style: italic;">difference message</span>.<br><h2>Applying some Brute Force</h2>I constructed a difference message, and tried all possible 16-bit polys on it (there are
+actually only 2**15 of them, because it doesn't make sense to use a poly
+whose LSB isn't 1), and all four combinations of the ReflectIn and
+ReflectOut parameters. I got some "hits" -- polys that produced the
+expected CRC.<br><br>Encouraged by this, I
+constructed another message with a different length and did the same
+thing again. I got some more hits. But unfortunately, <span style="font-style: italic;">none</span> of them
+matched any of the ones I got the first time.<br><br>At
+this point, I was stuck. I didn't have any more parameters to vary, so
+I was beginning to doubt that I was dealing with a standard CRC
+algorithm at all. If I wasn't, it seemed unlikely that I would ever be
+able to figure it out.<br><br>Then
+I got into a conversation with
+Patrick Maupin, who suggested a test that
+might help to clarify whether it was a true CRC or not. Due to the
+superposition principle, if changing a message by xoring it with a bit
+pattern <span style="font-style: italic;">B1</span> causes its CRC to change by<span style="font-style: italic;">
+C1</span>, and another bit pattern <span style="font-style: italic;">B2</span> causes the CRC to change by <span style="font-style: italic;">C2</span>, then
+xoring the message with (<span style="font-style: italic;">B1</span> xor <span style="font-style: italic;">B2</span>) should change the CRC by (<span style="font-style: italic;">C1</span> xor
+<span style="font-style: italic;">C2</span>). If that doesn't happen, the algorithm can't be an ordinary
+CRC algorithm.<br><br>I constructed some suitable test messages, and found that this property <span style="font-style: italic;">did</span>
+seem to hold. So there was hope that it could be a standard CRC algorithm, or something very similar to it.<br><br>I
+also began to wonder what I could learn by studying what happens to
+the CRC when individual bits of the file are changed. At first I
+thought that the CRC corresponding to a single 1 bit might be a
+rotation of the polynomial, but it turns out to be more complicated
+than that. However, after some more thinking along those lines, I came
+up with a possible plan of attack.<br><h2>Deducing the Polynomial</h2>Consider
+what the CRC algorithm does when applied to a message containing a
+single 1 bit with the rest zeroes. We are considering difference
+messages here, so the register starts off with a value of zero. As long
+as the input bits are zero, the register remains zero.<br><br>When the
+1 bit arrives, the polynomial gets loaded into the register. After
+that, it gets transformed by the shift-xor operation once for each
+remaining 0 bit in the message, with the leading bit of the register
+determining whether to xor the polynomial in or not.<br><br>So the final CRC value will be equal to the polynomial transformed by <span style="font-style: italic;">n</span> shift-xor cycles, where <span style="font-style: italic;">n</span> depends on the position of the 1 bit in the message.<br><br>Now
+consider two CRC values obtained from two 1-bit messages, where the 1
+bits are in adjacent positions. The resulting CRCs will differ by just <span style="font-style: italic;">one</span> shift-xor cycle. To be precise, if <span style="font-style: italic;">C1</span> corresponds to the message with a 1 in position <span style="font-style: italic;">i</span>, and <span style="font-style: italic;">C2</span> corresponds to the message with a 1 in position<span style="font-style: italic;"> i+1</span>,
+then <span style="font-style: italic;">C1</span> is derived from applying one shift-xor cycle to <span style="font-style: italic;">C2</span>. (If this
+seems backwards, it's because the further the 1 bit is from the end of
+the message, the more shift-xor cycles get applied to the CRC.)<br><br>There
+are two possibilities. If the leading bit of <span style="font-style: italic;">C2</span> (the one about to be
+shifted out) is 0, then <span style="font-style: italic;">C1</span> will be equal to <span style="font-style: italic;">C2</span> shifted by one place. If
+it is 1, then <span style="font-style: italic;">C2</span> will be equal to <span style="font-style: italic;">C1</span> shifted one place and xored with
+the polynomial.<br><br>So all we need to do is find a <span style="font-style: italic;">C1</span> and <span style="font-style: italic;">C2</span> such
+that the leading bit of <span style="font-style: italic;">C2</span> is 1, shift <span style="font-style: italic;">C2</span> by one place, and xor it with
+<span style="font-style: italic;">C1</span>. The result will be equal to the polynomial!<br><h2>Putting Theory into Practice</h2>All
+this seemed almost too magical to be true, so I had to try it out.
+Although I didn't have complete control over the contents of the files,
+I was able to construct a set of 1-bit difference messages for several
+adjacent bits, spanning two consecutive bytes somewhere in the middle
+of the data.<br><br>The byte values I came up with, and their
+corresponding CRC values (after byte swapping to correct for
+little-endianness) were as follows:<br><br><div style="margin-left: 40px;"><span style="font-family: monospace;">Bytes &nbsp; &nbsp;CRC</span><br><span style="font-family: monospace;">----- &nbsp; &nbsp;----</span><br><span style="font-family: monospace;">02 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">76</span><span style="font-family: monospace;">3c</span><br style="font-family: monospace;"><span style="font-family: monospace;">04 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">ec</span><span style="font-family: monospace;">78</span><br style="font-family: monospace;"><span style="font-family: monospace;">08 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">98</span><span style="font-family: monospace;">f3</span><br style="font-family: monospace;"><span style="font-family: monospace;">10 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">71</span><span style="font-family: monospace;">e5</span><br style="font-family: monospace;"><span style="font-family: monospace;">20 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">e3</span><span style="font-family: monospace;">ca</span><br style="font-family: monospace;"><span style="font-family: monospace;">40 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">87</span><span style="font-family: monospace;">97</span><br style="font-family: monospace;"><span style="font-family: monospace;">80 00&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">4f</span><span style="font-family: monospace;">2d</span><br style="font-family: monospace;"><span style="font-family: monospace;">00 01&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">9e</span><span style="font-family: monospace;">5a</span><br style="font-family: monospace;"><span style="font-family: monospace;">00 02&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">7c</span><span style="font-family: monospace;">b7</span><br style="font-family: monospace;"><span style="font-family: monospace;">00 04&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">f9</span><span style="font-family: monospace;">6e</span><br style="font-family: monospace;"><span style="font-family: monospace;">00 08&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">b2</span><span style="font-family: monospace;">df</span><br style="font-family: monospace;"><span style="font-family: monospace;">00 10&nbsp;&nbsp;&nbsp; </span><span style="font-family: monospace;">25</span><span style="font-family: monospace;">bd</span><br></div><br>Working
+upwards through the list of CRCs, it is apparent that whenever the LSB
+of a CRC is 0, the preceding one is obtained by simply right-shifting it,
+which is consistent with the theory outlined above.<br><br>Now let's
+see if we can extract the polynomial. Applying the shift-xor operation
+to adjacent CRC values gives the following results, shown in blue:<br><br><div style="margin-left: 40px;"><span style="font-family: monospace;">02 00 763c</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">0000</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">04 00 ec78</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">08 00 98f3</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">10 00 71e5</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">0000</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">20 00 e3ca</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">40 00 8797</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">80 00 4f2d</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">0000</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">00 01 9e5a</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">00 02 7cb7</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">0000</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">00 04 f96e</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">00 08 b2df</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;<span style="color: rgb(51, 51, 255);">a001</span></span><br style="font-family: monospace;"><span style="font-family: monospace;">00 10 25bd</span><br></div><br>From this it is clear that the polynomial is <span style="font-family: monospace;">0xa001</span>.<br><br>A
+few other things are also apparent. The shifting direction indicates
+that the ReflectOut parameter should be True, since shifting to the
+right is equivalent to using the canonical left-shifting version of the
+algorithm with the polynomial 0x8005 and then reflecting the resulting
+CRC. It is notable that 0x8005 is one of the standard 16-bit
+polynomials -- the one that pycrc calls "crc-16".<br><br>The fact that
+the 1 bits proceed from right to left within each byte as we go down
+the sequence indicates that bits are being processed LSB-first. In
+terms of the model parameters, this means ReflectIn = True.<br><br>I had now established all except two of the CRC algorithm parameters. I was making considerable progress!<br><h2>Clearing Up some Puzzles</h2>At
+this point there were some puzzling things that I needed to sort out.
+Having just discovered that one of the standard polynomials was
+apparently being used after all, I couldn't understand why I hadn't
+found it during my initial experiments with pycrc.<br><br>The first
+thing I did was go back and try pycrc again, in case I had made a
+mistake of some kind the first time around. Armed with knowledge of the
+polynomial, I <span style="font-style: italic;">should</span> have been able to run pycrc over one of my difference messages and obtain the correct CRC for it. But, it still didn't work.<br><br>I
+was convinced by now that I was dealing with a very standard CRC
+algorithm, so this failure was perplexing. Thinking about what
+could cause it, it occurred to me that my assumption about what region
+of the file was covered by the CRC might be wrong. Perhaps not all of
+the pad bytes were included, in which case I was going too far and
+ending up with the wrong CRC.<br><br>Trying to think how I could tell
+how far I should be going, I came up with the following idea. Start by
+initialising the register with the polynomial -- this corresponds to
+the state just after encountering the 1 in a 1-bit difference message.
+Then run the algorithm and count the number of steps required before
+the known CRC value is reached. Assuming it <span style="font-style: italic;">was</span> eventually reached, that would tell me how many 0 bits following the 1 were included in the CRC.<br><br>The
+test file I used had a 1 in the byte at offset 0xab. Running the
+algorithm told me that a further 0x358 zero bytes were needed to reach
+the correct CRC, meaning that the last byte was at offset 0x403...
+which was 4 bytes <span style="font-style: italic;">past</span> the end of the file!<br><br>So
+an extra 4 bytes from somewhere were being included in the CRC. To
+check this, I added another 4 zero bytes to the end of my difference
+file and ran pycrc over it. This time, I got the correct checksum.<br><h2>In Search of the Extra Bytes</h2>Where
+were the extra bytes coming from? One possibility was that they were in
+the header somewhere. Another was that they were just padding.<br><br>Previously
+I had assumed that the range of checked bytes was contiguous, but now I
+retracted that assumption and went back to investigate the header area
+more thoroughly. Poking around in it, I found that apart from the CRC
+itself, there were three other bytes that would provoke a CRC
+mismatch if I changed them.<br><br>One of them had a constant value of 0x04 in all the files I looked at. The other two bytes appeared to contain the
+length of the schema portion of the file, excluding the header.<br><br>My
+first thought was that&nbsp;perhaps these were three of the bytes
+making up the extra data, or that the extra data was derived
+from&nbsp;them in
+some way. However, I realised that there was another likely
+explanation for the CRC depending on the length bytes. If the
+application was using these bytes to tell how much
+schema data to read, then changing them would cause it to calculate a
+CRC for the wrong amount of data. So the contents of the extra bytes
+needn't have anything to do with the length bytes at all.<br><br>There
+was another curious thing about the extra bytes. The fact that I was
+able to successfully calculate CRCs for my difference files meant that
+the unseen contents of these bytes must have been the same for both of
+the files that went into each difference file. Otherwise, they would
+have differed by more than one bit, and my technique for deducing the
+polynomial wouldn't have worked.<br><br>This suggested that the extra
+bytes might be constant, or at least they might depend only on the
+length of the file and not the data in it. However, it might only have
+been a coincidence, because I had only been working with files having
+very small differences, and I might just not have happened to change
+anything that would trigger a difference in the extra bytes.<br><br>It
+would be fortuitous if the extra bytes were constant, because since
+they appear at the end of the data being checked, their effect on the
+CRC depends only on their contents and not on the length of the file.
+If they were constant, their actual contents wouldn't matter, because I
+would be able to assume they were zero and compensate for their effect
+by making an adjustment to the XorOut parameter.<br><br>In any case, I
+had gone about as far as I could go using difference files, and it was
+time to start working with the original files.<br><h2>Guessing Parameters</h2>When
+an XorIn or XorOut parameter is employed, the value almost always
+used is 0xffff, so the first thing I tried was calculating CRCs for
+some real files using both 0 and 0xffff for XorIn, and assuming zeroes
+for the extra bytes. This gave me the XorOut value that I would need to
+use in order to get a CRC matching the official one in the file.<br><br>The
+XorOut values that I obtained this way were not 0 or 0xffff, but this
+was to be expected, because the actual contents of the extra bytes may
+not have been zero. However, all of the
+files of a given length seemed to require the <span style="font-style: italic;">same</span> XorOut value, providing more support for the idea that the extra bytes are the same for all files of a particular length.<br><br>To
+further check this, I created some more test files with very different
+contents. The hypothesis still seemed to hold up -- the XorOut values
+required for a particular length was always the same.<br><br>I needed <span style="font-style: italic;">different</span>
+XorOut values for different lengths, however. This could have been
+because the extra bytes varied somehow according to the length of the
+file, but it could also have been because a non-standard XorIn was
+being used. This would get transformed in different ways as it passed
+through different numbers of shift-xor steps and change the resulting
+CRC.<br><br>I decided to stick with the hypothesis that the extra bytes
+were constant, and try to find an XorIn value consistent with it. This
+meant finding a single pair of XorIn/XorOut values that would work
+across files of different sizes.<br><br>Now, I could have used brute
+force again here. There are only 2**16 possibilities, because choosing
+an XorIn for some file uniquely determines the XorOut needed, and then
+it's just a matter of trying the same combination on another file and
+seeing if it works.<br><br>However, I wanted to see if I could come up
+with a more direct approach, partly for the challenge, and partly
+because it would give me a technique that could be applied to larger
+CRCs for which exhaustive searching would not be feasible.<br><h2>Deducing XorIn</h2>Time
+for some more theory. Earlier we considered exclusive-oring together
+two messages of the same length. Now let's look at what happens if we
+exclusive-or two messages of <span style="font-style: italic;">different</span> lengths together.<br><br>Let <span style="font-style: italic;">n1</span> and <span style="font-style: italic;">n2</span> be the lengths of the messages. The exclusive-or of their CRCs will be<br><br><table style="text-align: left; margin-left: 40px;" border="0" cellpadding="2" cellspacing="2"><tbody><tr><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;">C<sub>1</sub> + C<sub>2</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: middle;"><span style="font-style: italic;">=</span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;">(T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;">I + D<sub>1</sub> + F)</span> + <span style="font-style: italic;">(T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">I + D<sub>2</sub> + F</span>)</td></tr><tr><td align="left" nowrap="nowrap"></td><td align="left" nowrap="nowrap">=</td><td align="left" nowrap="nowrap"><span style="font-style: italic;"></span><span style="font-style: italic;">T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;">I +&nbsp;</span><span style="font-style: italic;">T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">I + (D<sub>1</sub> + D<sub>2</sub>)</span></td></tr></tbody></table><br>Notice that <span style="font-style: italic;">F</span> has cancelled out again, but not <span style="font-style: italic;">I</span>. We can further rearrange the equation to give<br><br><br><table style="text-align: left; margin-left: 40px;" border="0" cellpadding="2" cellspacing="2"><tbody><tr><td align="left" nowrap="nowrap"><span style="font-style: italic;">T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;">I +&nbsp;</span><span style="font-style: italic;">T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">I</span></td><td style="white-space: nowrap; text-align: left; vertical-align: middle;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;"></span><span style="font-style: italic;"></span><span style="font-style: italic;">C<sub>1</sub> + C<sub>2</sub></span><span style="font-style: italic;"> +&nbsp;D<sub>1</sub> + D<sub>2</sub></span></td></tr></tbody></table><br>or<br><br><table style="text-align: left; margin-left: 40px;" border="0" cellpadding="2" cellspacing="2"><tbody><tr><td align="left" nowrap="nowrap"><span style="font-style: italic;">(T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;">+&nbsp;</span><span style="font-style: italic;">T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">) I</span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;"></span><span style="font-style: italic;"></span><span style="font-style: italic;">K</span><span style="font-style: italic;"></span></td></tr></tbody></table><br>where <span style="font-style: italic;">K</span> =&nbsp;<span style="font-style: italic;">C<sub>1</sub> + C<sub>2</sub></span><span style="font-style: italic;"> +&nbsp;D<sub>1</sub> + D<sub>2</sub></span><span style="font-style: italic;"></span>. We now have an equation in which <span style="font-style: italic;">I</span> is the only unknown quantity.<br><br>Adding <span style="font-style: italic;">T</span><sup style="font-style: italic;">n1 </sup>and <span style="font-style: italic;">T</span><sup style="font-style: italic;">n2</sup> together may look a bit strange, but it makes perfectly good sense when you realise that <span style="font-style: italic;">T</span> is a linear operator, and can be manipulated using the techniques of linear algebra.<br><br>In particular, we can represent <span style="font-style: italic;">T</span> using a matrix, and calculate <span style="font-style: italic;">Tx</span> using matrix multiplication with mod-2 arithmetic.<br><br>To calculate <span style="font-style: italic;">T</span>, we decompose <span style="font-style: italic;">x</span> into a sum of basis elements <span style="font-style: italic;">b<sub>i</sub></span>, each of which corresponds to one bit: <span style="font-style: italic;">b<sub>1</sub></span> = 0x0001, <span style="font-style: italic;">b<sub>2</sub></span> = 0x0002, etc. Then feed each <span style="font-style: italic;">b<sub>i</sub></span> through one step of the shift-xor operation. The result becomes column <span style="font-style: italic;">i</span> of the matrix <span style="font-style: italic;">T</span>.<br><br>Having got <span style="font-style: italic;">T</span>, we can calculate <span style="font-style: italic;">M</span> = <span style="font-style: italic;">T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;">+&nbsp;</span><span style="font-style: italic;">T</span><sup style="font-style: italic;">n2</sup>. All that remains then is to solve the matrix equation <span style="font-style: italic;">M I = K</span>.<br><h2>Solving the Equation</h2>Solving
+a matrix equation like this is a standard linear algebra problem, so it
+seemed like it should be possible to use an algorithm such as
+Gauss-Jordan elimination, modified to use mod-2 arithmetic.<br><br>When
+I tried to do this, the elimination algorithm got stuck, unable to find
+a pivot element for the last row. Examining the matrix revealed that it
+had ended up with an all-zero row. When this happens, it is an
+indication that the equation has more than one solution.<br><br>The final state of the matrix looked like this:<br><br><div style="margin-left: 40px;"><span style="font-family: monospace;">&nbsp;0: &nbsp; 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;1: &nbsp; 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;1</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;2: &nbsp; 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;1</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;3: &nbsp; 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;4: &nbsp; 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;5: &nbsp; 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;6: &nbsp; 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;1</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;7: &nbsp; 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;8: &nbsp; 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">&nbsp;9: &nbsp; 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">10: &nbsp; 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">11: &nbsp; 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">12:&nbsp;&nbsp; 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 &nbsp; &nbsp;1</span><br style="font-family: monospace;"><span style="font-family: monospace;">13: &nbsp; 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 &nbsp; &nbsp;0</span><br style="font-family: monospace;"><span style="font-family: monospace;">14: &nbsp; 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 &nbsp; &nbsp;1</span><br style="font-family: monospace;"><span style="font-family: monospace;">15: &nbsp; 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 &nbsp; &nbsp;0</span><br></div><br>This corresponds to the following set of equations for the bits of <span style="font-style: italic;">I</span>:<br><br><table style="text-align: left; margin-left: 40px;" border="0" cellpadding="2" cellspacing="2"><tbody><tr><td align="left" nowrap="nowrap"><span style="font-style: italic;">b<sub>0</sub> + b<sub>15</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;"><span style="font-style: italic;"></span><span style="font-style: italic;"></span>0<span style="font-style: italic;"></span></td><td style="vertical-align: top; white-space: nowrap; text-align: left; width: 20px;"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>8</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">0</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>1</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">1</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>9</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">0</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>2</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">1</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>10</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">0</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>3</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">0</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>11</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">0</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>4</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">0</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>12</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">1</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>5</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">0</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>13</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">0</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>6</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">1</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;">b<sub>14</sub> + </span><span style="font-style: italic;">b<sub>15</sub></span></td><td align="left" nowrap="nowrap" valign="top">=</td><td align="left" nowrap="nowrap" valign="top">1</td></tr><tr><td style="text-align: right;" nowrap="nowrap"><span style="font-style: italic;">b<sub>7</sub></span></td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">=</td><td style="white-space: nowrap; text-align: left; vertical-align: bottom;">0</td><td align="left" nowrap="nowrap" valign="top"></td><td style="text-align: right;" nowrap="nowrap" valign="top"><span style="font-style: italic;"><br><sub></sub></span></td><td align="left" nowrap="nowrap" valign="top"></td><td align="left" nowrap="nowrap" valign="top"></td></tr></tbody></table><br>By
+inspection, there are two bit patterns that satisfy these constraints,
+0x5046 and 0x9047. Trying them on the relevant files revealed the
+corresponding XorOut values required:<br><br><table style="text-align: left; margin-left: 40px;" border="0" cellpadding="2" cellspacing="2"><tbody><tr><td style="font-weight: bold;" align="left" nowrap="nowrap" valign="top">XorIn</td><td style="vertical-align: top; white-space: nowrap; text-align: left; width: 20px;"></td><td style="font-weight: bold;" align="left" nowrap="nowrap" valign="top">XorOut</td></tr><tr><td style="vertical-align: top; white-space: nowrap; text-align: left; font-family: monospace;">5046</td><td align="left" nowrap="nowrap" valign="top"></td><td style="font-family: monospace;" align="left" nowrap="nowrap" valign="top">3e64</td></tr><tr><td style="font-family: monospace;" align="left" nowrap="nowrap" valign="top">5047</td><td align="left" nowrap="nowrap" valign="top"></td><td style="font-family: monospace;" align="left" nowrap="nowrap" valign="top">fe65</td></tr></tbody></table><br><br>I tried these values on the rest of my test files, and both combinations worked for all of them, regardless of the file size.<br><br><table style="text-align: left; width: 700px; margin-left: 40px;" border="1" cellpadding="10" cellspacing="0"><tbody><tr><td style="vertical-align: top; text-align: left;"><span style="font-weight: bold;">An Aside</span><br><br><small>It's interesting to note that the difference between
+these two XorIn values (0xc001) is also the difference between the
+corresponding XorOut values.<br><br>It turns out that this is not a
+coincidence, because 0xc001 is a fixed point of the shift-xor
+operation: (0xc001 &gt;&gt; 1) ^ 0xa001 == 0xc001. So if you change the
+initial register value by 0xc001, you change its value on all
+subsequent steps by 0xc001 also.<br><br>In terms of linear algebra, the value <span style="font-style: italic;">e</span> <span style="font-style: italic;">=</span> 0xc001 is an eigenvector of the matrix <span style="font-style: italic;">T</span> with eigenvalue 1, i.e. <span style="font-style: italic;">T e = e</span>. This also means that <span style="font-style: italic;">T</span><sup style="font-style: italic;">n</sup><span style="font-style: italic;"> e = e</span> for any n<span style="font-style: italic;"></span>. So <span style="font-style: italic;">(T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;"> + T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">) (x + e) = </span><span style="font-style: italic;">(T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;"> + T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">) x + e + e =&nbsp;</span><span style="font-style: italic;"></span><span style="font-style: italic;">(T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;"> + T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">) x.<br><br></span>Consequently, if <span style="font-style: italic;">X</span> is a solution of <span style="font-style: italic;"></span><span style="font-style: italic;">(T</span><sup style="font-style: italic;">n1</sup><span style="font-style: italic;"> + T</span><sup style="font-style: italic;">n2</sup><span style="font-style: italic;">) x = K,&nbsp;</span>then <span style="font-style: italic;">X + e</span> must also be a solution.</small></td></tr></tbody></table><br><h2>Success</h2>Encouraged by this, I tried one of these pairs on a collection of about 50 real files collected from the wild. It worked for<span style="font-style: italic;"></span> all of them.<br><br>I
+never found out exactly what was going on with the extra bytes, or why
+such strange-looking XorIn/XorOut values were needed, but I had found
+an algorithm which seemed to be good enough, and I was satisfied with
+that.<br><h2>Conclusion</h2>As
+well as solving my immediate problem, I
+had also developed a general method for determining all of the Rocksoft
+parameters for a CRC algorithm, given a small collection of
+specially-chosen example files. My case was complicated by the presence
+of unknown data, but if the data being checked is fully known, the
+method requires no&nbsp;searching or guesswork and can be used for CRCs
+of any size.<br><br>So
+if I ever need to figure out a 64-bit CRC, I'll be able to do it
+without needing a <a href="http://en.wikipedia.org/wiki/Blue_Gene">Blue Gene</a>. And now that you've read this, you will
+too!<br></body></html>
