@@ -1,0 +1,45 @@
+﻿<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>Xor</title>
+</head>
+<body>
+/api.php?<br>
+<textarea id="c" cols="100" rows="10"></textarea>
+<br><br>
+<input type="button" value="Get Key" onclick="$('p').value=GetKey($('c').value,$('n').value,$('m').value);">　　　　
+<input type="text" id="n" size="3"> n=0...255	
+<input type="text" id="m" size="4"> ##??##??
+<br><br>
+<textarea id="p" cols="100" rows="30"></textarea>
+<p>
+<script type="text/javascript">
+<!--
+function GetKey(c,n,m)
+{
+var xor = 0;
+var xornew = 0;
+var diff = 0;
+var sumdiff = -m;
+var res = '';
+var i = 0
+while (i< 32770) {
+	xornew=i^m;
+	diff = xornew-xor;
+	sumdiff+=diff;
+	res+=i+';'+xornew+';'+diff+';'+sumdiff+'\n';
+	xor = xornew;
+	i++
+	}
+return res;
+
+}
+
+function $(id)
+{
+	return document.getElementById(id);
+}
+//-->
+</script>
+</body>
+</html>
