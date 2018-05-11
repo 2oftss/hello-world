@@ -1,0 +1,44 @@
+clear_dungeon e blob - what I've found out so far.
+
+1. It stores the stats for rank dungeons.
+
+2. After first decoding it looks like:
+ss=207f6d2b&s=349706&e1=3c67b23&e2=346bf00&e3=c3c6ee21&e4=d47663b8&e5=ee3667d8&e6=b5a2de28&e7=1da57ab&e8=e54ec759&e9=447a8b7e&e10=d3472f35&e11=c95d7ce&e12=d0230457&e13=f9c414a6&e14=299ec29b&e15=47f0ec8a&e16=bf94afa2&e17=29330d97&e18=a2a11fe6&e19=d28ff71a&sm=da44a21d&cm=0
+
+3. ss is time since 01.01.2001 0:00:00 (PST I think) in seconds.
+
+4. e_n are val_n^key, where key depends on n and ss.
+
+5. e1 is Average combo x 10, e2 is Moves count.
+
+6. The rest are guesses: 
+e3 - something dependent on monsters used, but not Sum of rarities/6.
+e4 - maximal damage
+e5 - timex10
+e9 - damage by skills
+e10 - total damage
+e11/e15 - monsters/stages cleared by skill
+e12 - constantly changes. Looks like time since something (app launch?)
+e13 - monsters killed
+
+7. sm = val_1^val_2^...^val_19^CONST. 
+CONST = 3670662716 for my data, but could not even be constant for bigger sets - could have something else XOR'ed into it.
+
+8. From ss to ss+1 the key for each n changes:
+(First two bytes + Xn or (Xn+1)) % 65536
+(Last two bytes + Yn or (Yn+1)) % 65536
+Xn, Yn are some random numbers (for e1 X1=16838, Y1=49826; for e2 X2=32893, Y2=60934 etc.)
+The question is weather it is Xn OR Xn+1 - I can't find a consistent pattern.
+
+9. From 8, if we have several blobs for the same run with consequent ss, all the values and keys (except e12) can be found by bruteforce.
+For a correct val 
+((First two bytes of e_ss+2^val  - First two bytes of e_ss+1^val) - (First two bytes of e_ss+1^val  - First two bytes of e_ss^val)) % 65536 and
+((Last two bytes of e_ss+2^val  - Last two bytes of e_ss+1^val) - (Last two bytes of e_ss+1^val  - Last two bytes of e_ss^val)) % 65536
+should be -1,0 or 1 for each ss.
+When all the other vals are known val_12 = sm^CONST^val_1^...^val_11^val_13...^val_19.
+
+10. Keys for ss=0..32:
+
+key1 for ss= 0..1024:
+
+
