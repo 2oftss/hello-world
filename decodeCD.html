@@ -1,0 +1,189 @@
+﻿<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<title>decodeClearDungeon</title>
+</head>
+<body>
+e=<br>
+<textarea id="c" cols="100" rows="10"></textarea>
+<br><br>
+<input type="button" value="Decode" onclick="$('p').value=GetKeys($('c').value);">　　　　
+<br><br>
+<textarea id="p" cols="100" rows="30"></textarea>
+<p>
+<script type="text/javascript">
+<!--
+function GetKeys(c)
+{
+var A0 = ["41C64E6D", "807DBCB5", "EBA1483D", "9B355305", "0FFA0F0D", "5AD7FE55", "8D6072DD", "2B820EA5", "639143AD", "26C4D3F5", "1946517D", "F5F69E45", "AF066C4D", "8982BD95", "EEF5641D", "F53981E5", "E9A408ED", "3E5FC4CB", "6FE02ABD"];
+var A1 = ["C2A29A69", "EE067F11", "D3DC57F9", "CFDDDF21", "EF1C5E89", "C8333031", "88FE3E19", "5F748241", "EC4686A9", "9EE0E551", "F372C839", "CC986961", "CB4992C9", "D8AC1E71", "4E6A7659", "8B2E1481", "89DE02E9", "83415B91", "FAA5C879"];
+var B0 = ["00003031", "A70427DF", "0DAA96E8", "3EAD62E1", "AF5AAD14", "AFE533D7", "961BAFA9", "525F3673", "7E7099A8", "BB6CC64C", "D010275F", "5A1900CD", "7D60D4D1", "B904C0C3", "5EB4DDFC", "02020000", "05463F14", "608CFDBE", "C1F2B3BF"];
+var B1 = ["D3DC1656", "D6651C02", "C21F1C6E", "CD1DCF17", "20DA773E", "69ACC4BC", "261EB2D4", "6513692B", "E6791B07", "44FDE850", "9FFFBC28", "5BAF2E2E", "AA1D61FB", "DAACE6ED", "961D9874", "642B7E32", "CC78ABC0", "473A207B", "B2DFA7C4"];
+var text="";
+var text1="";
+var keyset=[];
+var params=[];
+var val=[];
+var n=0;
+if (c.substr(0,2) != "ss")
+	{ 
+		c = decodePadDungeon(c);
+		if (c.substr(0,2) != "ss") return "Wrong format!";
+	}
+temp=c.split('&');
+for (var i = 0; i <temp.length; i++) {
+	params[i]=temp[i].split('=')[1];
+	}
+n= params[0];
+t= new Date ((978307200+parseInt(n,16))*1000).toISOString();
+for (var e=0; e < 19; e++) {
+	keyset[e] = mult(n,A0[e],B0[e])+mult(n,A1[e],B1[e]);
+	val[e+1] = parseInt(params[e+2],16)^parseInt(keyset[e],16);
+	text = text+ "e"+(e+1)+"="+val[e+1]+"; ";
+	text1 = text1 + "k"+(e+1)+"="+keyset[e]+"; ";
+	}
+//text= t.substr(0,10)+" "+t.substr(11,8)+"\n"+"Score="+params[1]+"\n"+"Avg.Combo=" + (val[1]/10)+"\n"+"Moves="+val[2]+"\n"+"Rarity="+(val[3]/10)+"\n"+"Max.Damage="+val[4]+"\n"+"Time="+val[5]+"\n"+"Total Path?="+val[6]+"\n"+"Total Damage="+val[10]+"\n"+"Skills Used="+val[11]+"\n"+"sm=" + params[21];
+text = text + "\n"+text1;
+return text;
+}
+function mult(n,a,b)
+{
+res="";
+sum=parseInt(b,16);
+for (var i=1; i < a.length+1; i++) {
+	m1=parseInt(n,16);
+	m2=parseInt(a.substr(a.length-i,1),16);
+	p = (m1*m2).toString(16);
+	while (p.length < 8) p = '0' + p;
+	p1 = p.substr(p.length-9+i, 9-i)+"00000000";
+	p2 = p1.substr(0, p1.length-9+i);
+	sum=sum+parseInt(p2,16);
+	}
+res= (sum).toString(16);
+while (res.length < 8) res = '0' + res;
+res = res.substr(res.length-8,4);
+return res;
+}
+function decodePadDungeon(c)
+{
+	var h1 = parseInt(c.substr(0, 2), 16);
+	var h2 = parseInt(c.substr(2, 2), 16);
+	var key = h1;
+	var p = "";
+	var t1, t2, t3, t4;
+	var cflag = 0, cbuff = "";
+	var chksum = 0;
+	
+	for (var i = 4; i < c.length; i++)
+	{
+		t1 = ascii2code(c.charCodeAt(i));
+		key = getKey(key);
+		t2 = (t1 ^ key) & 0x3f;
+		
+		if (t2 != 62)
+		{
+			if (cflag == 0)
+			{
+				t3 = code2ascii(t2);
+				p += String.fromCharCode(t3);
+				chksum += t3;
+			}
+			else
+			{
+				if (cflag == 1)
+				{
+					t3 = code2ascii(t2);
+					cbuff += String.fromCharCode(t3);
+					cflag = 2;
+				}
+				else
+				{
+					t3 = code2ascii(t2);
+					cbuff += String.fromCharCode(t3);
+					t4 = parseInt(cbuff, 16);
+					p += String.fromCharCode(t4);
+					chksum += t4;
+					cflag = 0;
+				}
+			}
+		}
+		else
+		{
+			cflag = 1;
+			cbuff = "";
+		}
+	}
+	return p;
+	/*
+	if((h1 ^ h2) == (chksum % 256))
+	{
+		return p;
+	}
+	else
+	{
+		return false;
+	}
+	*/
+}
+function getKey(k)
+{
+	return (57 * k + 109) % 256;
+}
+function code2ascii(a)
+{
+	var b = null;
+	if (a <= 9)
+	{
+		b = a + 48;
+	}
+	else if (a <= 35)
+	{
+		b = a + 87;
+	}
+	else if (a <= 61)
+	{
+		b = a + 29;
+	}
+	else if (a == 62)
+	{
+		b = 46;
+	}
+	else if (a == 63)
+	{
+		b = 44;
+	}
+	return b;
+}
+function ascii2code(a)
+{
+	var b = null;
+	if (a == 44)
+	{
+		b = 63;
+	}
+	else if (a == 46)
+	{
+		b = 62;
+	}
+	else if (48 <= a && a <= 57)
+	{
+		b = a - 48;
+	}
+	else if (65 <= a && a <= 90)
+	{
+		b = a - 29;
+	}
+	else if (97 <= a && a <= 122)	
+	{
+		b = a - 87;
+	}
+	return b;
+}
+function $(id)
+{
+	return document.getElementById(id);
+}
+//-->
+</script>
+</body>
+</html>
